@@ -1,4 +1,5 @@
-﻿// From AoC 2020 day 23
+﻿#![allow(clippy::redundant_field_names)]
+// From AoC 2020 day 23
 // https://adventofcode.com/2020/day/23
 //
 // This is not the best solution for the puzzle which can also be solved with a linked
@@ -29,8 +30,8 @@ impl CrabGame {
             cg.all_cups
                 .insert(i, (bytes.get(i).unwrap() - b'0') as usize);
         }
-        for i in bytes.len() + 1..number_of_cups + 1 {
-            cg.all_cups.insert(i, i);
+        for i in bytes.len()..number_of_cups {
+            cg.all_cups.insert(i, i + 1);
         }
         cg
     }
