@@ -1,3 +1,4 @@
+#![allow(clippy::redundant_field_names)]
 // This Adelson-Velsky and Landis (AVL) tree implementation comes from Knuth's TAOCP textbook,
 // volume 3, "Sorting and Searching". Page numbers refer to the 1973 edition. I have used
 // Knuth's variable names where possible and replicated the algorithm steps from the book.
@@ -20,7 +21,7 @@ use std::ops::Index;
 type InternalIndex = usize;
 type ExternalIndex = usize;
 type Direction = u8;
-type Balance = i8;
+type Balance = Ordering;
 const NO_INDEX: InternalIndex = usize::MAX;
 const HEAD_INDEX: InternalIndex = 0;
 
@@ -384,7 +385,7 @@ where
         let n: AVLNode<ValueType> = AVLNode {
             child: [NO_INDEX, NO_INDEX],
             value: value,
-            balance: 0,
+            balance: Ordering::Equal,
             direction: 0,
             rank: 0,
             parent: NO_INDEX,
@@ -481,7 +482,7 @@ where
             q = self.iget(p).child[direction as usize];
             if q != NO_INDEX {
                 // Continue search
-                if self.iget(q).balance != 0 {
+                if self.iget(q).balance != Ordering::Equal {
                     t = p;
                     s = q;
                     s_index = c_index;
@@ -494,7 +495,7 @@ where
                 n.direction = direction;
                 n.rank = 1;
                 n.parent = p;
-                n.balance = 0;
+                n.balance = Ordering::Equal;
                 self.iget_mut(p).child[direction as usize] = q;
                 self.lookup.insert(value, q);
                 break;
@@ -513,30 +514,30 @@ where
         }
         while p != q {
             if c_index <= self.left_rank(p) {
-                self.iget_mut(p).balance = -1;
+                self.iget_mut(p).balance = Ordering::Greater;
                 p = self.iget(p).child[0];
             } else {
                 c_index -= self.left_rank(p) + 1;
-                self.iget_mut(p).balance = 1;
+                self.iget_mut(p).balance = Ordering::Less;
                 p = self.iget(p).child[1];
             }
         }
         // A7 balancing act
-        let a: Balance;
+        let a: Ordering;
         if s_index <= self.left_rank(s) {
-            a = -1;
+            a = Ordering::Greater;
             direction = 0;
         } else {
-            a = 1;
+            a = Ordering::Less;
             direction = 1;
         }
-        if self.iget(s).balance == 0 {
+        if self.iget(s).balance == Ordering::Equal {
             // case i. The tree has grown higher
             self.iget_mut(s).balance = a;
             return true;
-        } else if self.iget(s).balance == -a {
+        } else if self.iget(s).balance == a.reverse() {
             // case ii. The tree has gotten more balanced
-            self.iget_mut(s).balance = 0;
+            self.iget_mut(s).balance = Ordering::Equal;
             return true;
         }
         // case iii. The tree is not balanced
@@ -547,7 +548,7 @@ where
             self.rerank(s);
             self.rerank(r);
             self.rerank(p);
-        } else if self.iget(r).balance == -a {
+        } else if self.iget(r).balance == a.reverse() {
             // page 454 case 2
             p = self.double_rotation(r, s, direction);
             self.rerank(s);
@@ -592,8 +593,8 @@ where
         let p = r;
         self.iget_mut(s).child[direction as usize] = self.iget(r).child[1 - direction as usize]; // beta subtree moved from r to s
         self.iget_mut(r).child[1 - direction as usize] = s; // node r becomes child of s
-        self.iget_mut(s).balance = 0;
-        self.iget_mut(r).balance = 0;
+        self.iget_mut(s).balance = Ordering::Equal;
+        self.iget_mut(r).balance = Ordering::Equal;
         self.iget_mut(s).direction = 1 - direction;
         self.iget_mut(s).parent = r;
 
@@ -626,7 +627,11 @@ where
         //
         // direction = 0 is the same operation applied to a mirror image.
 
-        let a: Balance = if direction > 0 { 1 } else { -1 };
+        let a: Ordering = if direction > 0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
 
         let p: InternalIndex = self.iget(r).child[1 - direction as usize]; // p is child of r (node X in the book)
         self.iget_mut(r).child[1 - direction as usize] = self.iget(p).child[direction as usize]; // gamma subtree moved from p to r
@@ -634,16 +639,16 @@ where
         self.iget_mut(s).child[direction as usize] = self.iget(p).child[1 - direction as usize]; // beta subtree moved from p to s
         self.iget_mut(p).child[1 - direction as usize] = s; // s becomes child of p
         if self.iget(p).balance == a {
-            self.iget_mut(s).balance = -a;
-            self.iget_mut(r).balance = 0;
-        } else if self.iget(p).balance == 0 {
-            self.iget_mut(s).balance = 0;
-            self.iget_mut(r).balance = 0;
+            self.iget_mut(s).balance = a.reverse();
+            self.iget_mut(r).balance = Ordering::Equal;
+        } else if self.iget(p).balance == Ordering::Equal {
+            self.iget_mut(s).balance = Ordering::Equal;
+            self.iget_mut(r).balance = Ordering::Equal;
         } else {
-            self.iget_mut(s).balance = 0;
+            self.iget_mut(s).balance = Ordering::Equal;
             self.iget_mut(r).balance = a;
         }
-        self.iget_mut(p).balance = 0;
+        self.iget_mut(p).balance = Ordering::Equal;
 
         self.iget_mut(s).parent = p;
         self.iget_mut(s).direction = 1 - direction;
@@ -788,21 +793,25 @@ where
         while self.iget(adjust_p).parent != NO_INDEX {
             let next_adjust_direction: Direction = self.iget(adjust_p).direction;
             let next_adjust_p: InternalIndex = self.iget(adjust_p).parent;
-            let adjust_a: Balance = if adjust_direction == 1 { 1 } else { -1 };
+            let adjust_a: Ordering = if adjust_direction == 1 {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            };
 
             if self.iget(adjust_p).balance == adjust_a {
                 // page 466 i: repeat adjustment procedure for parent
-                self.iget_mut(adjust_p).balance = 0;
-            } else if self.iget(adjust_p).balance == 0 {
+                self.iget_mut(adjust_p).balance = Ordering::Equal;
+            } else if self.iget(adjust_p).balance == Ordering::Equal {
                 // page 466 ii: tree is balanced
-                self.iget_mut(adjust_p).balance = -adjust_a;
+                self.iget_mut(adjust_p).balance = adjust_a.reverse();
                 break;
             } else {
                 // page 466 iii - rebalancing required
                 let s = adjust_p; // parent of subtree requiring rotation
                 let r = self.iget(adjust_p).child[1 - adjust_direction as usize]; // child requiring rotation is the OPPOSITE of the one removed
 
-                if self.iget(r).balance == -adjust_a {
+                if self.iget(r).balance == adjust_a.reverse() {
                     // page 454 case 1
                     p = self.single_rotation(r, s, 1 - adjust_direction);
                     self.iget_mut(next_adjust_p).child[next_adjust_direction as usize] = p;
@@ -820,11 +829,11 @@ where
                     self.rerank(s);
                     self.rerank(r);
                     self.rerank(p);
-                } else if self.iget(r).balance == 0 {
+                } else if self.iget(r).balance == Ordering::Equal {
                     // case 3: like case 1 except that beta has height h + 1 (same as gamma)
                     p = self.single_rotation(r, s, 1 - adjust_direction);
                     self.iget_mut(next_adjust_p).child[next_adjust_direction as usize] = p;
-                    self.iget_mut(adjust_p).balance = -adjust_a;
+                    self.iget_mut(adjust_p).balance = adjust_a.reverse();
                     self.iget_mut(p).balance = adjust_a;
                     self.iget_mut(p).parent = next_adjust_p;
                     self.iget_mut(p).direction = next_adjust_direction;
@@ -884,7 +893,7 @@ mod test {
             Depth::max(d1, d2)
         }
 
-        fn get_balance(test_me: &TestAssociativePositionalList, node: InternalIndex) -> Balance {
+        fn get_balance(test_me: &TestAssociativePositionalList, node: InternalIndex) -> Ordering {
             let mut d1: Depth = 0;
             let mut d2: Depth = 0;
             let c1 = test_me.iget(node).child[0];
@@ -895,7 +904,7 @@ mod test {
             if c2 != NO_INDEX {
                 d2 = 1 + get_max_depth(test_me, c2);
             }
-            ((d2 as isize) - (d1 as isize)) as Balance
+            d1.cmp(&d2)
         }
 
         fn get_rank(test_me: &TestAssociativePositionalList, node: InternalIndex) -> Rank {
@@ -932,8 +941,6 @@ mod test {
             let r = get_rank(test_me, node);
             assert_eq!(r, test_me.iget(node).rank);
             let x = get_balance(test_me, node);
-            assert!(x >= -1);
-            assert!(x <= 1);
             assert_eq!(x, test_me.iget(node).balance);
         }
 
