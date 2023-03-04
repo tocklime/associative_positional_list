@@ -472,11 +472,9 @@ where
     /// * If the set did not previously contain this value, true is returned.
     /// * If the set already contained this value, false is returned.
     pub fn insert(&mut self, index: ExternalIndex, value: ValueType) -> bool {
-        if index > self.len() {
-            panic!(
-                "Can't insert item at index {index}: current length is {}",
-                self.len()
-            );
+        let len = self.len();
+        if index > len {
+            panic!("insertion index (is {index}) should be <= len (is {len})");
         }
         if self.data.is_empty() {
             // Tree has never been used before - add the HEAD_INDEX node
