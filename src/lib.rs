@@ -36,8 +36,7 @@ impl Direction {
     }
 }
 type Balance = Ordering;
-const NO_INDEX: InternalIndex = usize::MAX;
-const HEAD_INDEX: InternalIndex = 0;
+const HEAD_INDEX: usize = 0;
 
 /// AssociativePositionalList is a positional container in which each value is
 /// associated with an index, starting at 0 for the first element. Values can be
@@ -132,7 +131,7 @@ where
 
 #[derive(Debug)]
 struct AVLNode<ValueType> {
-    child: [InternalIndex; 2],
+    child: [Option<InternalIndex>; 2],
     value: ValueType,
     balance: Balance,
     direction: Direction,
@@ -141,13 +140,13 @@ struct AVLNode<ValueType> {
 }
 
 impl<ValueType> AVLNode<ValueType> {
-    fn get_child(&self, d: Direction) -> InternalIndex {
+    fn get_child(&self, d: Direction) -> Option<InternalIndex> {
         match d {
             Direction::Left => self.child[0],
             Direction::Right => self.child[1],
         }
     }
-    fn get_child_mut(&mut self, d: Direction) -> &mut InternalIndex {
+    fn get_child_mut(&mut self, d: Direction) -> &mut Option<InternalIndex> {
         match d {
             Direction::Left => &mut self.child[0],
             Direction::Right => &mut self.child[1],
@@ -250,9 +249,9 @@ where
         // Find the next item to be returned - the top of the stack is
         // either the last node to be returned by the iterator,
         // or the head of the list
-        let mut c = self.stack.last().unwrap().index;
-        c = self.parent.iget(c).child[1];
-        if c != NO_INDEX {
+        let c = self.stack.last().unwrap().index;
+        let c = self.parent.iget(c).child[1];
+        if let Some(c) = c {
             // There is a right child, so we should move right
             self.stack.push(IterStackItem {
                 index: c,
@@ -260,13 +259,11 @@ where
             });
 
             // Fill the stack with the path to the leftmost item with a value
-            loop {
-                c = self.parent.iget(c).child[0];
-                if c == NO_INDEX {
-                    break;
-                }
+            let mut child = c;
+            while let Some(index) = self.parent.iget(child).get_child(Direction::Left) {
+                child = index;
                 self.stack.push(IterStackItem {
-                    index: c,
+                    index: child,
                     direction: Direction::Left,
                 });
             }
@@ -317,15 +314,20 @@ where
         if self.data.is_empty() {
             panic!("cannot access head() until one element has been inserted");
         }
-        return self.iget(HEAD_INDEX);
+        return self.data.get(0).unwrap();
+    }
+    fn head_mut(&mut self) -> &mut AVLNode<ValueType> {
+        if self.data.is_empty() {
+            panic!("cannot access head() until one element has been inserted");
+        }
+        return self.data.get_mut(0).unwrap();
     }
 
     fn left_rank(&self, index: InternalIndex) -> ExternalIndex {
-        let c = self.iget(index).child[0];
-        if c != NO_INDEX {
-            return self.iget(c).rank;
+        match self.iget(index).get_child(Direction::Left) {
+            Some(c) => self.iget(c).rank,
+            None => 0,
         }
-        0
     }
 
     /// Returns true if the list is empty
@@ -346,11 +348,12 @@ where
         let mut p: InternalIndex = *self.lookup.get(value)?;
 
         if self.iget(p).value != *value {
+            //TODO: Panic here?
             return None; // The value has changed, the rule about uniqueness wasn't followed
         }
 
         let mut ext_index: ExternalIndex = self.left_rank(p);
-        let end: InternalIndex = self.head().child[1];
+        let end: InternalIndex = self.head().child[1].unwrap();
         while p != end {
             if self.iget(p).direction == Direction::Right {
                 p = self.iget(p).parent;
@@ -369,19 +372,23 @@ where
             // nothing was ever inserted into the list
             return None;
         }
-        let mut p: InternalIndex = self.head().get_child(Direction::Right);
+        let mut p = self.head().get_child(Direction::Right);
         let mut ext_index_copy = index;
 
         loop {
-            if p == NO_INDEX {
-                return None; // index does not exist
-            } else if ext_index_copy < self.left_rank(p) {
-                p = self.iget(p).get_child(Direction::Left);
-            } else if ext_index_copy == self.left_rank(p) {
-                return Some(&self.iget(p).value); // index found
-            } else {
-                ext_index_copy -= self.left_rank(p) + 1;
-                p = self.iget(p).get_child(Direction::Right);
+            match p {
+                None => return None,
+                Some(child) => {
+                    let left_rank = self.left_rank(child);
+                    match ext_index_copy.cmp(&left_rank) {
+                        Ordering::Less => p = self.iget(child).get_child(Direction::Left),
+                        Ordering::Equal => return Some(&self.iget(child).value), // index found
+                        Ordering::Greater => {
+                            ext_index_copy -= left_rank + 1;
+                            p = self.iget(child).get_child(Direction::Right);
+                        }
+                    }
+                }
             }
         }
     }
@@ -408,18 +415,18 @@ where
             // Quickly reset the head of the list
             self.lookup.clear();
             self.data.truncate(HEAD_INDEX + 1);
-            self.iget_mut(HEAD_INDEX).child = [NO_INDEX, NO_INDEX];
+            self.head_mut().child = [None, None];
         }
     }
 
-    fn new_node(&mut self, value: ValueType) -> InternalIndex {
+    fn new_node(&mut self, value: ValueType, parent: InternalIndex) -> InternalIndex {
         let n: AVLNode<ValueType> = AVLNode {
-            child: [NO_INDEX, NO_INDEX],
+            child: [None, None],
             value: value,
             balance: Ordering::Equal,
             direction: Direction::Left,
             rank: 0,
-            parent: NO_INDEX,
+            parent: parent,
         };
         self.data.push(n);
         self.data.len() - 1
@@ -439,12 +446,12 @@ where
         // new child-parent links
         if let Some(parent) = self.data.get_mut(replacement.parent) {
             for c in &mut parent.child {
-                if *c == replacement_index {
-                    *c = remove_index;
+                if *c == Some(replacement_index) {
+                    *c = Some(remove_index);
                 }
             }
         }
-        for c in &replacement.child {
+        for c in replacement.child.iter().flatten() {
             if let Some(child) = self.data.get_mut(*c) {
                 child.parent = remove_index;
             }
@@ -465,141 +472,155 @@ where
     /// * If the set did not previously contain this value, true is returned.
     /// * If the set already contained this value, false is returned.
     pub fn insert(&mut self, index: ExternalIndex, value: ValueType) -> bool {
+        if index > self.len() {
+            panic!(
+                "Can't insert item at index {index}: current length is {}",
+                self.len()
+            );
+        }
         if self.data.is_empty() {
             // Tree has never been used before - add the HEAD_INDEX node
-            if self.new_node(value.clone()) != HEAD_INDEX {
+            if self.new_node(value.clone(), HEAD_INDEX) != HEAD_INDEX {
                 panic!("index of head node is not HEAD_INDEX");
             }
         }
 
-        let mut p: InternalIndex = self.head().get_child(Direction::Right); // the pointer variable p will move down the tree
-        let mut s: InternalIndex = self.head().get_child(Direction::Right); // s will point to the place where rebalancing may be necessary
+        let mut p: Option<InternalIndex> = self.head().get_child(Direction::Right); // the pointer variable p will move down the tree
+        let mut s: Option<InternalIndex> = self.head().get_child(Direction::Right); // s will point to the place where rebalancing may be necessary
         let mut t: InternalIndex = HEAD_INDEX; // t will always point to the parent of s
-        let mut q: InternalIndex;
+        let mut q: Option<InternalIndex>;
         let r: InternalIndex;
         let mut direction: Direction;
         let mut s_index: ExternalIndex = index; // index at the point where rebalancing was necessary
         let mut c_index: ExternalIndex = index;
 
-        if p == NO_INDEX {
-            // empty tree special case
-            let i = self.new_node(value.clone());
-            *self.iget_mut(HEAD_INDEX).get_child_mut(Direction::Right) = i;
-            let mut n = self.iget_mut(i);
-            n.direction = Direction::Right;
-            n.rank = 1;
-            n.parent = HEAD_INDEX;
-            self.lookup.insert(value, i);
-            return true;
-        }
-        if self.lookup.contains_key(&value) {
-            // value is already present - nothing happens
-            return false;
-        }
-
-        loop {
-            if c_index <= self.left_rank(p) {
-                // move left
-                direction = Direction::Left;
-            } else {
-                // move right
-                direction = Direction::Right;
-                c_index -= self.left_rank(p) + 1;
-            }
-
-            // inserting something below p - therefore, rank of p increases
-            self.iget_mut(p).rank += 1;
-
-            q = self.iget(p).get_child(direction);
-            if q != NO_INDEX {
-                // Continue search
-                if self.iget(q).balance != Ordering::Equal {
-                    t = p;
-                    s = q;
-                    s_index = c_index;
-                }
-                p = q;
-            } else {
-                // New child (appending)
-                q = self.new_node(value.clone());
-                let mut n = self.iget_mut(q);
-                n.direction = direction;
+        match p {
+            None => {
+                // empty tree special case
+                let i = self.new_node(value.clone(), HEAD_INDEX);
+                *self.iget_mut(HEAD_INDEX).get_child_mut(Direction::Right) = Some(i);
+                let mut n = self.iget_mut(i);
+                n.direction = Direction::Right;
                 n.rank = 1;
-                n.parent = p;
-                n.balance = Ordering::Equal;
-                *self.iget_mut(p).get_child_mut(direction) = q;
-                self.lookup.insert(value, q);
-                break;
+                self.lookup.insert(value, i);
+                true
             }
-        }
+            Some(mut p_inner) => {
+                if self.lookup.contains_key(&value) {
+                    // value is already present - nothing happens
+                    return false;
+                }
 
-        // adjust balance factors
-        c_index = s_index;
-        if c_index <= self.left_rank(s) {
-            p = self.iget(s).get_child(Direction::Left);
-            r = p;
-        } else {
-            c_index -= self.left_rank(s) + 1;
-            p = self.iget(s).get_child(Direction::Right);
-            r = p;
-        }
-        while p != q {
-            if c_index <= self.left_rank(p) {
-                self.iget_mut(p).balance = Ordering::Greater;
-                p = self.iget(p).child[0];
-            } else {
-                c_index -= self.left_rank(p) + 1;
-                self.iget_mut(p).balance = Ordering::Less;
-                p = self.iget(p).child[1];
+                loop {
+                    if c_index <= self.left_rank(p_inner) {
+                        // move left
+                        direction = Direction::Left;
+                    } else {
+                        // move right
+                        direction = Direction::Right;
+                        c_index -= self.left_rank(p_inner) + 1;
+                    }
+
+                    // inserting something below p - therefore, rank of p increases
+                    self.iget_mut(p_inner).rank += 1;
+
+                    q = self.iget(p_inner).get_child(direction);
+                    match q {
+                        Some(q_inner) => {
+                            // Continue search
+                            if self.iget(q_inner).balance != Ordering::Equal {
+                                t = p_inner;
+                                s = Some(q_inner);
+                                s_index = c_index;
+                            }
+                            p_inner = q_inner;
+                        }
+                        None => {
+                            // New child (appending)
+                            let q_inner = self.new_node(value.clone(), p_inner);
+                            q = Some(q_inner);
+                            let mut n = self.iget_mut(q_inner);
+                            n.direction = direction;
+                            n.rank = 1;
+                            n.balance = Ordering::Equal;
+                            *self.iget_mut(p_inner).get_child_mut(direction) = q;
+                            self.lookup.insert(value, q_inner);
+                            break;
+                        }
+                    }
+                }
+
+                // adjust balance factors
+                assert!(s.is_some());
+                let s = s.unwrap();
+                c_index = s_index;
+                if c_index <= self.left_rank(s) {
+                    p = self.iget(s).get_child(Direction::Left);
+                    r = p.unwrap();
+                } else {
+                    c_index -= self.left_rank(s) + 1;
+                    p = self.iget(s).get_child(Direction::Right);
+                    r = p.unwrap();
+                }
+                while p != q {
+                    if c_index <= self.left_rank(p.unwrap()) {
+                        self.iget_mut(p.unwrap()).balance = Ordering::Greater;
+                        p = self.iget(p.unwrap()).child[0];
+                    } else {
+                        c_index -= self.left_rank(p.unwrap()) + 1;
+                        self.iget_mut(p.unwrap()).balance = Ordering::Less;
+                        p = self.iget(p.unwrap()).child[1];
+                    }
+                }
+                // A7 balancing act
+                let a: Ordering;
+                if s_index <= self.left_rank(s) {
+                    a = Ordering::Greater;
+                    direction = Direction::Left;
+                } else {
+                    a = Ordering::Less;
+                    direction = Direction::Right;
+                }
+                if self.iget(s).balance == Ordering::Equal {
+                    // case i. The tree has grown higher
+                    self.iget_mut(s).balance = a;
+                    return true;
+                } else if self.iget(s).balance == a.reverse() {
+                    // case ii. The tree has gotten more balanced
+                    self.iget_mut(s).balance = Ordering::Equal;
+                    return true;
+                }
+                // case iii. The tree is not balanced
+                // note: r = s.get_child(direction)
+                if self.iget(r).balance == a {
+                    // page 454 case 1
+                    p = Some(self.single_rotation(r, s, direction));
+                    self.rerank(s);
+                    self.rerank(r);
+                    self.rerank(p.unwrap());
+                } else if self.iget(r).balance == a.reverse() {
+                    // page 454 case 2
+                    p = Some(self.double_rotation(r, s, direction));
+                    self.rerank(s);
+                    self.rerank(r);
+                    self.rerank(p.unwrap());
+                } else {
+                    // unbalanced in an unexpected way
+                    panic!();
+                }
+                // A10 finishing touch
+                if Some(s) == self.iget(t).get_child(Direction::Right) {
+                    self.iget_mut(t).child[1] = p;
+                    self.iget_mut(p.unwrap()).parent = t;
+                    self.iget_mut(p.unwrap()).direction = Direction::Right;
+                } else {
+                    self.iget_mut(t).child[0] = p;
+                    self.iget_mut(p.unwrap()).parent = t;
+                    self.iget_mut(p.unwrap()).direction = Direction::Left;
+                }
+                true
             }
         }
-        // A7 balancing act
-        let a: Ordering;
-        if s_index <= self.left_rank(s) {
-            a = Ordering::Greater;
-            direction = Direction::Left;
-        } else {
-            a = Ordering::Less;
-            direction = Direction::Right;
-        }
-        if self.iget(s).balance == Ordering::Equal {
-            // case i. The tree has grown higher
-            self.iget_mut(s).balance = a;
-            return true;
-        } else if self.iget(s).balance == a.reverse() {
-            // case ii. The tree has gotten more balanced
-            self.iget_mut(s).balance = Ordering::Equal;
-            return true;
-        }
-        // case iii. The tree is not balanced
-        // note: r = s.get_child(direction)
-        if self.iget(r).balance == a {
-            // page 454 case 1
-            p = self.single_rotation(r, s, direction);
-            self.rerank(s);
-            self.rerank(r);
-            self.rerank(p);
-        } else if self.iget(r).balance == a.reverse() {
-            // page 454 case 2
-            p = self.double_rotation(r, s, direction);
-            self.rerank(s);
-            self.rerank(r);
-            self.rerank(p);
-        } else {
-            // unbalanced in an unexpected way
-            panic!();
-        }
-        // A10 finishing touch
-        if s == self.iget(t).child[1] {
-            self.iget_mut(t).child[1] = p;
-            self.iget_mut(p).parent = t;
-            self.iget_mut(p).direction = Direction::Right;
-        } else {
-            self.iget_mut(t).child[0] = p;
-            self.iget_mut(p).parent = t;
-            self.iget_mut(p).direction = Direction::Left;
-        }
-        true
     }
 
     fn single_rotation(
@@ -623,14 +644,13 @@ where
 
         let p = r;
         *self.iget_mut(s).get_child_mut(direction) = self.iget(r).get_child(direction.flip()); // beta subtree moved from r to s
-        *self.iget_mut(r).get_child_mut(direction.flip()) = s; // node r becomes child of s
+        *self.iget_mut(r).get_child_mut(direction.flip()) = Some(s); // node r becomes child of s
         self.iget_mut(s).balance = Ordering::Equal;
         self.iget_mut(r).balance = Ordering::Equal;
         self.iget_mut(s).direction = direction.flip();
         self.iget_mut(s).parent = r;
 
-        if self.iget(s).child[direction as usize] != NO_INDEX {
-            let c = self.iget(s).child[direction as usize];
+        if let Some(c) = self.iget(s).get_child(direction) {
             self.iget_mut(c).parent = s;
             self.iget_mut(c).direction = direction;
         }
@@ -663,11 +683,11 @@ where
             Direction::Right => Ordering::Less,
         };
 
-        let p: InternalIndex = self.iget(r).child[1 - direction as usize]; // p is child of r (node X in the book)
-        self.iget_mut(r).child[1 - direction as usize] = self.iget(p).child[direction as usize]; // gamma subtree moved from p to r
-        self.iget_mut(p).child[direction as usize] = r; // r becomes child of p
-        self.iget_mut(s).child[direction as usize] = self.iget(p).child[1 - direction as usize]; // beta subtree moved from p to s
-        self.iget_mut(p).child[1 - direction as usize] = s; // s becomes child of p
+        let p: InternalIndex = self.iget(r).get_child(direction.flip()).unwrap(); // p is child of r (node X in the book)
+        *self.iget_mut(r).get_child_mut(direction.flip()) = self.iget(p).get_child(direction); // gamma subtree moved from p to r
+        *self.iget_mut(p).get_child_mut(direction) = Some(r); // r becomes child of p
+        *self.iget_mut(s).get_child_mut(direction) = self.iget(p).get_child(direction.flip()); // beta subtree moved from p to s
+        *self.iget_mut(p).get_child_mut(direction.flip()) = Some(s); // s becomes child of p
         if self.iget(p).balance == a {
             self.iget_mut(s).balance = a.reverse();
             self.iget_mut(r).balance = Ordering::Equal;
@@ -682,38 +702,28 @@ where
 
         self.iget_mut(s).parent = p;
         self.iget_mut(s).direction = direction.flip();
-        let sc = self.iget(s).child[direction as usize];
-        if sc != NO_INDEX {
+        if let Some(sc) = self.iget(s).get_child(direction) {
             self.iget_mut(sc).parent = s;
             self.iget_mut(sc).direction = direction;
         }
 
         self.iget_mut(r).parent = p;
         self.iget_mut(r).direction = direction;
-        let rc = self.iget(r).child[1 - direction as usize];
-        if rc != NO_INDEX {
+        if let Some(rc) = self.iget(r).get_child(direction.flip()) {
             self.iget_mut(rc).parent = r;
             self.iget_mut(rc).direction = direction.flip();
         }
-
         p
     }
 
     fn rerank(&mut self, node: InternalIndex) {
-        let mut old_rerank = 1;
-        for i in 0..2 {
-            if self.iget(node).child[i] != NO_INDEX {
-                old_rerank += self.iget(self.iget(node).child[i]).rank;
-            }
-        }
         let child_rank_sum = self
             .iget(node)
             .child
             .iter()
-            .filter(|&&c| c != NO_INDEX)
+            .flatten()
             .map(|&c| self.iget(c).rank)
             .sum::<usize>();
-        assert_eq!(old_rerank, 1 + child_rank_sum);
         self.iget_mut(node).rank = 1 + child_rank_sum;
     }
 
@@ -725,29 +735,25 @@ where
             return;
         }
 
-        let mut p: InternalIndex = self.head().child[1];
+        let p: Option<InternalIndex> = self.head().get_child(Direction::Right);
         let mut adjust_p: InternalIndex = HEAD_INDEX;
         let mut adjust_direction: Direction = Direction::Right;
         let mut c_index: ExternalIndex = index;
 
-        if (p == NO_INDEX) || (index >= self.iget(p).rank) {
+        if p.is_none() || (index >= self.iget(p.unwrap()).rank) {
             // unable to delete element outside of list
             return;
         }
+        let mut p = p.unwrap();
 
         loop {
-            if p == NO_INDEX {
-                // this should not be possible due to the index check at the start of the Delete method
-                panic!("unable to find index");
-            }
-
             // element will be removed below p
             self.iget_mut(p).rank -= 1;
             match c_index.cmp(&self.left_rank(p)) {
                 Ordering::Less => {
                     adjust_p = p;
                     adjust_direction = Direction::Left;
-                    p = self.iget(p).child[0];
+                    p = self.iget(p).get_child(Direction::Left).unwrap();
                 }
                 Ordering::Equal => {
                     // element found - stop
@@ -757,14 +763,14 @@ where
                     adjust_p = p;
                     adjust_direction = Direction::Right;
                     c_index -= self.left_rank(p) + 1;
-                    p = self.iget(p).child[1];
+                    p = self.iget(p).get_child(Direction::Right).unwrap();
                 }
             }
         }
         let free_before_returning: InternalIndex;
 
         // found the node to delete (p)
-        if (self.iget(p).child[0] != NO_INDEX) && (self.iget(p).child[1] != NO_INDEX) {
+        if self.iget(p).child.iter().all(|c| c.is_some()) {
             // non-leaf node with two children being deleted
             // page 429 Tree deletion (is for a non-balanced binary tree)
 
@@ -777,17 +783,17 @@ where
             adjust_direction = Direction::Right;
 
             // find p, a node we can actually remove
-            p = self.iget(p).child[1];
-            while self.iget(p).child[0] != NO_INDEX {
+            p = self.iget(p).get_child(Direction::Right).unwrap();
+            while let Some(child) = self.iget(p).get_child(Direction::Left) {
                 self.iget_mut(p).rank -= 1;
                 adjust_p = p;
                 adjust_direction = Direction::Left;
-                p = self.iget(p).child[0];
+                p = child;
             }
             self.iget_mut(p).rank -= 1;
 
             // Now we found p, a node with zero or one child - easily removed:
-            let p_child_1 = self.iget(p).child[1];
+            let p_child_1 = self.iget(p).get_child(Direction::Right);
 
             // move p's contents to q
             self.lookup.remove(&self.iget(q).value.clone());
@@ -797,39 +803,41 @@ where
             p = q;
 
             // fix up a connection to p's child (if p had a child)
-            self.iget_mut(adjust_p).child[adjust_direction as usize] = p_child_1;
-            if p_child_1 != NO_INDEX {
-                self.iget_mut(p_child_1).parent = adjust_p;
-                self.iget_mut(p_child_1).direction = adjust_direction;
+            *self.iget_mut(adjust_p).get_child_mut(adjust_direction) = p_child_1;
+            if let Some(pch1) = p_child_1 {
+                self.iget_mut(pch1).parent = adjust_p;
+                self.iget_mut(pch1).direction = adjust_direction;
             }
-            self.iget_mut(self.iget(p).child[0]).parent = p;
-            self.iget_mut(self.iget(p).child[0]).direction = Direction::Left;
-            if self.iget(p).child[1] != NO_INDEX {
-                self.iget_mut(self.iget(p).child[1]).parent = p;
-                self.iget_mut(self.iget(p).child[1]).direction = Direction::Right;
+            if let Some(p_left_child) = self.iget(p).get_child(Direction::Left) {
+                self.iget_mut(p_left_child).parent = p;
+                self.iget_mut(p_left_child).direction = Direction::Left;
             }
-        } else if self.iget(p).child[0] != NO_INDEX {
-            // Node has one child - so it's easily removed:
+            if let Some(p_right_child) = self.iget(p).get_child(Direction::Right) {
+                self.iget_mut(p_right_child).parent = p;
+                self.iget_mut(p_right_child).direction = Direction::Right;
+            }
+        } else if let Some(p_left_child) = self.iget(p).get_child(Direction::Left) {
+            // Node has one left child - so it's easily removed:
             self.lookup.remove(&self.iget(p).value.clone());
             self.iget_mut(adjust_p).child[adjust_direction as usize] = self.iget(p).child[0];
-            self.iget_mut(self.iget(p).child[0]).parent = adjust_p;
-            self.iget_mut(self.iget(p).child[0]).direction = adjust_direction;
+            self.iget_mut(p_left_child).parent = adjust_p;
+            self.iget_mut(p_left_child).direction = adjust_direction;
             free_before_returning = p;
         } else {
-            // Node has zero or one child - again easily removed.
+            //Node has no children, or a right child - again easily removed.
             self.lookup.remove(&self.iget(p).value.clone());
-            self.iget_mut(adjust_p).child[adjust_direction as usize] = self.iget(p).child[1];
-            let c = self.iget(p).child[1];
-            if c != NO_INDEX {
-                self.iget_mut(c).parent = adjust_p;
-                self.iget_mut(c).direction = adjust_direction;
+            *self.iget_mut(adjust_p).get_child_mut(adjust_direction) =
+                self.iget(p).get_child(Direction::Right);
+            if let Some(p_right_child) = self.iget(p).get_child(Direction::Right) {
+                self.iget_mut(p_right_child).parent = adjust_p;
+                self.iget_mut(p_right_child).direction = adjust_direction;
             }
             free_before_returning = p;
         }
 
         // The process of deleting node p sets parent.p.child[parent.direction]
         // and so the balance factor at parent.p is adjusted
-        while self.iget(adjust_p).parent != NO_INDEX {
+        while adjust_p != HEAD_INDEX {
             let next_adjust_direction: Direction = self.iget(adjust_p).direction;
             let next_adjust_p: InternalIndex = self.iget(adjust_p).parent;
             let adjust_a: Ordering = if adjust_direction == Direction::Right {
@@ -848,14 +856,17 @@ where
             } else {
                 // page 466 iii - rebalancing required
                 let s = adjust_p; // parent of subtree requiring rotation
-                let r = self.iget(adjust_p).get_child(adjust_direction.flip()); // child requiring rotation is the OPPOSITE of the one removed
+                let r = self
+                    .iget(adjust_p)
+                    .get_child(adjust_direction.flip())
+                    .unwrap(); // child requiring rotation is the OPPOSITE of the one removed
 
                 if self.iget(r).balance == adjust_a.reverse() {
                     // page 454 case 1
                     p = self.single_rotation(r, s, adjust_direction.flip());
                     *self
                         .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = p;
+                        .get_child_mut(next_adjust_direction) = Some(p);
                     self.iget_mut(p).parent = next_adjust_p;
                     self.iget_mut(p).direction = next_adjust_direction;
                     self.rerank(s);
@@ -866,7 +877,7 @@ where
                     p = self.double_rotation(r, s, adjust_direction.flip());
                     *self
                         .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = p;
+                        .get_child_mut(next_adjust_direction) = Some(p);
                     self.iget_mut(p).parent = next_adjust_p;
                     self.iget_mut(p).direction = next_adjust_direction;
                     self.rerank(s);
@@ -877,7 +888,7 @@ where
                     p = self.single_rotation(r, s, adjust_direction.flip());
                     *self
                         .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = p;
+                        .get_child_mut(next_adjust_direction) = Some(p);
                     self.iget_mut(adjust_p).balance = adjust_a.reverse();
                     self.iget_mut(p).balance = adjust_a;
                     self.iget_mut(p).parent = next_adjust_p;
@@ -906,54 +917,51 @@ where
 {
     //consistency checks.
     fn calculate_depth_at_node(&self, node: InternalIndex) -> usize {
-        if node == NO_INDEX {
-            return 0;
-        }
         self.iget(node)
             .child
             .iter()
-            .filter(|&&c| c != NO_INDEX)
+            .flatten()
             .map(|&c| self.calculate_depth_at_node(c))
             .max()
             .unwrap_or_default()
             + 1
     }
     fn calculate_rank_at_node(&self, node: InternalIndex) -> usize {
-        if node == NO_INDEX {
-            return 0;
-        }
         self.iget(node)
             .child
             .iter()
             .copied()
-            .filter(|&c| c != NO_INDEX)
+            .flatten()
             .map(|c| self.calculate_rank_at_node(c))
             .sum::<usize>()
             + 1
     }
     fn calculate_balance(&self, node: InternalIndex) -> Ordering {
         let n = self.iget(node);
-        let d1 = self.calculate_depth_at_node(n.get_child(Direction::Left));
-        let d2 = self.calculate_depth_at_node(n.get_child(Direction::Right));
+        let [d1, d2] = [Direction::Left, Direction::Right].map(|d| {
+            n.get_child(d)
+                .map(|c| self.calculate_depth_at_node(c))
+                .unwrap_or_default()
+        });
         assert!(d1.abs_diff(d2) <= 1);
         d1.cmp(&d2)
     }
     // Check that the whole tree is internally consistent
     fn check_consistent(&self) {
         //global constraints - emptiness of data and lookup match.
+        // dbg!(&self.data);
         if self.data.is_empty() {
             // Tree has never been used - check state
             assert!(self.lookup.is_empty());
             return;
         }
-        if self.head().child[1] == NO_INDEX {
-            return;
+        if let Some(ch) = self.head().get_child(Direction::Right) {
+            assert_eq!(self.iget(ch).parent, HEAD_INDEX);
+            assert_eq!(self.iget(ch).direction, Direction::Right);
+            let mut visited: HashMap<InternalIndex, bool> = HashMap::new();
+            self.check_consistent_node(ch, &mut visited);
+            assert_eq!(visited.len(), self.len());
         }
-        assert_eq!(self.iget(self.head().child[1]).parent, HEAD_INDEX);
-        assert_eq!(self.iget(self.head().child[1]).direction, Direction::Right);
-        let mut visited: HashMap<InternalIndex, bool> = HashMap::new();
-        self.check_consistent_node(self.iget(HEAD_INDEX).child[1], &mut visited);
-        assert_eq!(visited.len(), self.len());
     }
 
     // Check that a subtree (with root 'node') is internally consistent
@@ -968,18 +976,66 @@ where
         visited.insert(node, true);
 
         assert!(node < self.data.len());
-        for i in 0..2 {
-            let child = self.iget(node).child[i];
-            if child != NO_INDEX {
+        let me = self.iget(node);
+        for d in [Direction::Left, Direction::Right] {
+            if let Some(child) = me.get_child(d) {
                 self.check_consistent_node(child, visited);
                 assert_eq!(self.iget(child).parent, node);
-                assert_eq!(self.iget(child).direction as usize, i);
+                assert_eq!(self.iget(child).direction, d);
             }
         }
-        let r = self.calculate_rank_at_node(node);
-        assert_eq!(r, self.iget(node).rank);
-        let x = self.calculate_balance(node);
-        assert_eq!(x, self.iget(node).balance);
+        assert_eq!(
+            me.rank,
+            self.calculate_rank_at_node(node),
+            "Rank checking node with value {:?} in tree: {}",
+            me.value,
+            self.draw_tree()
+        );
+        assert_eq!(
+            me.balance,
+            self.calculate_balance(node),
+            "Balance checking node with value {:?} in tree: {}",
+            me.value,
+            self.draw_tree()
+        );
+    }
+
+    pub fn draw_tree(&self) -> String {
+        if self.is_empty() {
+            return "[]".to_owned();
+        }
+        let mut ans = String::new();
+        let mut stack = vec![(0, self.head().get_child(Direction::Right).unwrap())];
+        while let Some((d, n)) = stack.pop() {
+            let me = self.iget(n);
+            match d {
+                0 => {
+                    //we're going left.
+                    ans.push('[');
+                    stack.push((1, n));
+                    if let Some(left) = me.get_child(Direction::Left) {
+                        stack.push((0, left));
+                    }
+                }
+                1 => {
+                    let bal_char = match me.balance {
+                        Ordering::Less => '<',
+                        Ordering::Equal => '=',
+                        Ordering::Greater => '>',
+                    };
+                    ans.push_str(&format!(",{:?}{},", me.value, bal_char));
+                    stack.push((2, n));
+                    if let Some(right) = me.get_child(Direction::Right) {
+                        stack.push((0, right));
+                    }
+                }
+                2 => {
+                    ans.push(']');
+                }
+                _ => unreachable!(),
+            }
+        }
+        ans
     }
 }
 
@@ -1002,90 +1058,80 @@ mod test {
         let mut t = AssociativePositionalList::<u16>::new();
         t.insert(0, 1);
         t.insert(1, 2);
+        let result: Vec<u16> = t.iter().collect();
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut t = AssociativePositionalList::<u16>::new();
+        t.insert(0, 1);
+        t.insert(1, 2);
+        t.remove(0);
+        let result: Vec<u16> = t.iter().collect();
+        assert_eq!(result, vec![2]);
+    }
+
+    #[test]
+    fn test_rev_list_of_3() {
+        let vec = vec![0, 1, 2];
+        let mut t = AssociativePositionalList::new();
+        for a in vec.iter().rev() {
+            t.insert(0, a);
+            t.check_consistent();
+        }
+        let back_to_vec: Vec<u8> = t.iter().copied().collect();
+        assert_eq!(back_to_vec, vec);
+    }
+    #[test]
+    fn test_list_of_6() {
+        let vec = vec![0, 1, 2, 3, 4, 5];
+        let mut t = AssociativePositionalList::new();
+        for (ix, a) in vec.iter().enumerate() {
+            t.insert(ix, a);
+            t.check_consistent();
+        }
+        let back_to_vec: Vec<u8> = t.iter().copied().collect();
+        assert_eq!(back_to_vec, vec);
+    }
+
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn test_add_in_order(size in 0..100u8) {
+            let vec : Vec<u8> = (0..size).collect();
+            let mut t = AssociativePositionalList::new();
+            for (ix, a) in vec.iter().enumerate() {
+                t.insert(ix, a);
+            }
+            let back_to_vec : Vec<u8> = t.iter().copied().collect();
+            assert_eq!(back_to_vec, vec);
+        }
+        #[test]
+        fn test_add_in_rev_order(size in 0..100u8) {
+            let vec : Vec<u8> = (0..size).collect();
+            let mut t = AssociativePositionalList::new();
+            for a in vec.iter().rev() {
+                t.insert(0, a);
+            }
+            let back_to_vec : Vec<u8> = t.iter().copied().collect();
+            assert_eq!(back_to_vec, vec);
+        }
     }
     #[test]
     fn test_randomly() {
+        #![allow(clippy::eq_op)]
         use rand::rngs::StdRng;
-        use rand::Rng;
         use rand::SeedableRng;
         type Rank = usize;
         type Depth = usize;
         type TestValueType = u16;
         type TestAssociativePositionalList = AssociativePositionalList<TestValueType>;
 
-        // Check that a subtree (with root 'node') matches part of the reference list
-        fn check_with_list_node(
-            test_me: &TestAssociativePositionalList,
-            node: InternalIndex,
-            ref_list: &[TestValueType],
-        ) {
-            let mut size: Rank = 0;
-            let c1 = test_me.iget(node).child[0];
-            if c1 != NO_INDEX {
-                size += test_me.iget(c1).rank;
-                check_with_list_node(test_me, c1, &ref_list[0..size]);
-            }
-            assert_eq!(ref_list[size], test_me.iget(node).value);
-
-            let node2 = test_me.lookup.get(&test_me.iget(node).value);
-            assert!(node2.is_some());
-            assert_eq!(*node2.unwrap(), node);
-            size += 1;
-
-            let c2 = test_me.iget(node).child[1];
-            if c2 != NO_INDEX {
-                check_with_list_node(test_me, c2, &ref_list[size..ref_list.len()]);
-                size += test_me.iget(c2).rank;
-            }
-            assert_eq!(size, ref_list.len());
-        }
-
-        fn check_with_list(test_me: &TestAssociativePositionalList, ref_list: &Vec<TestValueType>) {
-            if test_me.data.is_empty() {
-                // Tree has never been used - check all state is empty
-                assert!(test_me.lookup.is_empty());
-                assert!(ref_list.is_empty());
-                assert!(Vec::from_iter(test_me.iter()).is_empty());
-                assert!(test_me.is_empty());
-                assert_eq!(test_me.len(), 0);
-                return;
-            }
-            // Check the length is correct
-            assert_eq!(test_me.lookup.len(), ref_list.len());
-            assert_eq!(test_me.data.len(), ref_list.len() + 1); // +1 for HEAD_INDEX element
-            assert_eq!(test_me.len(), ref_list.len());
-            assert!(test_me.get(ref_list.len()).is_none());
-
-            // Check that the tree matches the reference list
-            let c = test_me.head().child[1];
-            if c == NO_INDEX {
-                assert!(ref_list.is_empty());
-                assert!(test_me.is_empty());
-            } else {
-                assert!(!ref_list.is_empty()); // size of tree should be non-zero
-                assert!(!test_me.is_empty());
-                // size of 'lookup' hash should match size of tree if values are unique
-                assert_eq!(test_me.iget(c).rank, test_me.lookup.len());
-                check_with_list_node(test_me, c, ref_list.as_slice());
-            }
-
-            // Test the iterator
-            let mut i: usize = 0;
-            for value in test_me.iter() {
-                assert_eq!(*ref_list.get(i).unwrap(), value);
-                i += 1;
-            }
-            assert_eq!(ref_list.len(), i);
-
-            // Test the Index trait
-            for j in 0..ref_list.len() {
-                assert_eq!(ref_list[j], test_me[j]);
-            }
-        }
-
         fn check_all(test_me: &TestAssociativePositionalList, ref_list: &Vec<TestValueType>) {
             test_me.check_consistent();
-            check_with_list(test_me, ref_list);
+            let as_vec: Vec<TestValueType> = test_me.iter().collect();
+            assert_eq!(&as_vec, ref_list);
         }
 
         let mut test_me: TestAssociativePositionalList = AssociativePositionalList::new();
@@ -1094,7 +1140,7 @@ mod test {
         check_all(&test_me, &ref_list);
 
         let mut rng = StdRng::seed_from_u64(1);
-        let test_size: TestValueType = 1000;
+        let test_size: TestValueType = 100;
 
         // test without items
         assert!(test_me.is_empty());
