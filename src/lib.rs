@@ -132,9 +132,8 @@ struct AVLNode<ValueType> {
     child: [Option<InternalIndex>; 2],
     value: Option<ValueType>,
     balance: Balance,
-    direction: Direction,
     rank: ExternalIndex,
-    parent: InternalIndex,
+    parent: (InternalIndex, Direction),
 }
 
 impl<ValueType> AVLNode<ValueType> {
@@ -155,9 +154,8 @@ impl<ValueType> AVLNode<ValueType> {
             child: [None, None],
             value: value,
             balance: Ordering::Equal,
-            direction: direction,
             rank: 1,
-            parent: parent,
+            parent: (parent, direction),
         }
     }
 }
@@ -194,6 +192,8 @@ where
                 (Some(x), Some(y)) => {
                     if x != y {
                         return false; // found elements that don't match
+                    } else {
+                        //they are the same so far, we must keep going.
                     }
                 }
                 _ => {
@@ -222,7 +222,7 @@ where
     ) -> AssociativePositionalList<ValueType> {
         let mut p: AssociativePositionalList<ValueType> = AssociativePositionalList::new();
         for (i, x) in iter.into_iter().enumerate() {
-            p.insert(i, x.clone());
+            p.insert(i, x);
         }
         p
     }
@@ -254,12 +254,13 @@ impl<'a, ValueType> Iterator for Iter<'a, ValueType> {
         let c = self.stack.last().unwrap().index;
         let c = self.parent.iget(c).child[1];
         if let Some(c) = c {
-            // There is a right child, so we should move right
+            // There is a right child, so we should eventually move right
             self.stack.push(IterStackItem {
                 index: c,
                 direction: Direction::Right,
             });
 
+            // But first we need to output all to the left.
             // Fill the stack with the path to the leftmost item with a value
             let mut child = c;
             while let Some(index) = self.parent.iget(child).get_child(Direction::Left) {
@@ -272,8 +273,8 @@ impl<'a, ValueType> Iterator for Iter<'a, ValueType> {
         } else {
             // There is no right child, so we should move up
             loop {
-                let direction = self.stack.last().unwrap().direction;
-                self.stack.pop();
+                let item = self.stack.pop().unwrap();
+                let direction = item.direction;
                 if direction == Direction::Left {
                     // If we returned from the left, we can move right next time
                     break;
@@ -286,8 +287,9 @@ impl<'a, ValueType> Iterator for Iter<'a, ValueType> {
         }
 
         // Return the value referenced at the top of the stack
-        let n: &AVLNode<ValueType> = self.parent.iget(self.stack.last().unwrap().index);
-        n.value.as_ref()
+        self.parent.data[self.stack.last().unwrap().index]
+            .value
+            .as_ref()
     }
 }
 
@@ -421,16 +423,14 @@ impl<ValueType> AssociativePositionalList<ValueType> {
 
         // node s becomes child of r
         *self.data[r].get_child_mut(direction.flip()) = Some(s);
-        self.data[s].parent = r;
-        self.data[s].direction = direction.flip();
+        self.data[s].parent = (r, direction.flip());
 
         //both s and r should now be balanced.
         self.data[s].balance = Ordering::Equal;
         self.data[r].balance = Ordering::Equal;
 
         if let Some(c) = self.data[s].get_child(direction) {
-            self.data[c].parent = s;
-            self.data[c].direction = direction;
+            self.data[c].parent = (s, direction);
         }
         r
     }
@@ -488,18 +488,14 @@ impl<ValueType> AssociativePositionalList<ValueType> {
 
         self.data[p].balance = Ordering::Equal;
 
-        self.data[s].parent = p;
-        self.data[s].direction = direction.flip();
+        self.data[s].parent = (p, direction.flip());
         if let Some(sc) = self.iget(s).get_child(direction) {
-            self.data[sc].parent = s;
-            self.data[sc].direction = direction;
+            self.data[sc].parent = (s, direction);
         }
 
-        self.data[r].parent = p;
-        self.data[r].direction = direction;
+        self.data[r].parent = (p, direction);
         if let Some(rc) = self.data[r].get_child(direction.flip()) {
-            self.data[rc].parent = r;
-            self.data[rc].direction = direction.flip();
+            self.data[rc].parent = (r, direction.flip());
         }
         p
     }
@@ -532,11 +528,11 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
         let mut ext_index: ExternalIndex = self.left_rank(p);
         let end: InternalIndex = self.head().child[1].unwrap();
         while p != end {
-            if self.iget(p).direction == Direction::Right {
-                p = self.iget(p).parent;
+            if self.iget(p).parent.1 == Direction::Right {
+                p = self.iget(p).parent.0;
                 ext_index += self.left_rank(p) + 1;
             } else {
-                p = self.iget(p).parent;
+                p = self.iget(p).parent.0;
             }
         }
         Some(ext_index)
@@ -555,7 +551,6 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
         //first, grab the data we need (then drop the moved ref)
         let moved = &self.data[remove_index];
         let parent_of_moved = moved.parent;
-        let direction_of_moved = moved.direction;
         let children = moved.child;
 
         // Update the lookup table: update the index for this value
@@ -565,13 +560,13 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
         // it's safe to unwrap here because we assume that parent-child links are correctly maintained in both directions
         *self
             .data
-            .get_mut(parent_of_moved)
+            .get_mut(parent_of_moved.0)
             .unwrap()
-            .get_child_mut(direction_of_moved) = Some(remove_index);
+            .get_child_mut(parent_of_moved.1) = Some(remove_index);
 
         //fix all the child links
         for c in children.iter().flatten() {
-            self.data.get_mut(*c).unwrap().parent = remove_index;
+            self.data.get_mut(*c).unwrap().parent.0 = remove_index;
         }
     }
 
@@ -584,8 +579,7 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
         }
 
         let p: Option<InternalIndex> = self.head().get_child(Direction::Right);
-        let mut adjust_p: InternalIndex = HEAD_INDEX;
-        let mut adjust_direction: Direction = Direction::Right;
+        let mut adjust_p = (HEAD_INDEX, Direction::Right);
         let mut c_index: ExternalIndex = index;
 
         if p.is_none() || (index >= self.iget(p.unwrap()).rank) {
@@ -599,8 +593,7 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
             self.iget_mut(p).rank -= 1;
             match c_index.cmp(&self.left_rank(p)) {
                 Ordering::Less => {
-                    adjust_p = p;
-                    adjust_direction = Direction::Left;
+                    adjust_p = (p, Direction::Left);
                     p = self.iget(p).get_child(Direction::Left).unwrap();
                 }
                 Ordering::Equal => {
@@ -608,8 +601,7 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
                     break;
                 }
                 Ordering::Greater => {
-                    adjust_p = p;
-                    adjust_direction = Direction::Right;
+                    adjust_p = (p, Direction::Right);
                     c_index -= self.left_rank(p) + 1;
                     p = self.iget(p).get_child(Direction::Right).unwrap();
                 }
@@ -627,15 +619,13 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
 
             // q - the node we would like to remove
             let q = p;
-            adjust_p = p;
-            adjust_direction = Direction::Right;
+            adjust_p = (p, Direction::Right);
 
             // find p, a node we can actually remove
             p = self.iget(p).get_child(Direction::Right).unwrap();
             while let Some(child) = self.iget(p).get_child(Direction::Left) {
                 self.iget_mut(p).rank -= 1;
-                adjust_p = p;
-                adjust_direction = Direction::Left;
+                adjust_p = (p, Direction::Left);
                 p = child;
             }
             self.iget_mut(p).rank -= 1;
@@ -654,98 +644,87 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
             p = q;
 
             // fix up a connection to p's child (if p had a child)
-            *self.iget_mut(adjust_p).get_child_mut(adjust_direction) = p_child_1;
+            *self.iget_mut(adjust_p.0).get_child_mut(adjust_p.1) = p_child_1;
             if let Some(pch1) = p_child_1 {
                 self.iget_mut(pch1).parent = adjust_p;
-                self.iget_mut(pch1).direction = adjust_direction;
             }
             if let Some(p_left_child) = self.iget(p).get_child(Direction::Left) {
-                self.iget_mut(p_left_child).parent = p;
-                self.iget_mut(p_left_child).direction = Direction::Left;
+                self.iget_mut(p_left_child).parent = (p, Direction::Left);
             }
             if let Some(p_right_child) = self.iget(p).get_child(Direction::Right) {
-                self.iget_mut(p_right_child).parent = p;
-                self.iget_mut(p_right_child).direction = Direction::Right;
+                self.iget_mut(p_right_child).parent = (p, Direction::Right);
             }
         } else if let Some(p_left_child) = self.iget(p).get_child(Direction::Left) {
             // Node has one left child - so it's easily removed:
             let p_value = self.data[p].value.take().unwrap();
             self.lookup.remove(&p_value);
-            self.iget_mut(adjust_p).child[adjust_direction as usize] = self.iget(p).child[0];
+            *self.iget_mut(adjust_p.0).get_child_mut(adjust_p.1) =
+                self.iget(p).get_child(Direction::Left);
             self.iget_mut(p_left_child).parent = adjust_p;
-            self.iget_mut(p_left_child).direction = adjust_direction;
             free_before_returning = p;
         } else {
             //Node has no children, or a right child - again easily removed.
             let p_value = self.data[p].value.take().unwrap();
             self.lookup.remove(&p_value);
-            *self.iget_mut(adjust_p).get_child_mut(adjust_direction) =
+            *self.iget_mut(adjust_p.0).get_child_mut(adjust_p.1) =
                 self.iget(p).get_child(Direction::Right);
             if let Some(p_right_child) = self.iget(p).get_child(Direction::Right) {
                 self.iget_mut(p_right_child).parent = adjust_p;
-                self.iget_mut(p_right_child).direction = adjust_direction;
             }
             free_before_returning = p;
         }
 
         // The process of deleting node p sets parent.p.child[parent.direction]
         // and so the balance factor at parent.p is adjusted
-        while adjust_p != HEAD_INDEX {
-            let next_adjust_direction: Direction = self.iget(adjust_p).direction;
-            let next_adjust_p: InternalIndex = self.iget(adjust_p).parent;
-            let adjust_a: Ordering = if adjust_direction == Direction::Right {
+        while adjust_p.0 != HEAD_INDEX {
+            let next_adjust_p = self.iget(adjust_p.0).parent;
+            let adjust_a: Ordering = if adjust_p.1 == Direction::Right {
                 Ordering::Less
             } else {
                 Ordering::Greater
             };
 
-            if self.iget(adjust_p).balance == adjust_a {
+            if self.iget(adjust_p.0).balance == adjust_a {
                 // page 466 i: repeat adjustment procedure for parent
-                self.iget_mut(adjust_p).balance = Ordering::Equal;
-            } else if self.iget(adjust_p).balance == Ordering::Equal {
+                self.iget_mut(adjust_p.0).balance = Ordering::Equal;
+            } else if self.iget(adjust_p.0).balance == Ordering::Equal {
                 // page 466 ii: tree is balanced
-                self.iget_mut(adjust_p).balance = adjust_a.reverse();
+                self.iget_mut(adjust_p.0).balance = adjust_a.reverse();
                 break;
             } else {
                 // page 466 iii - rebalancing required
-                let s = adjust_p; // parent of subtree requiring rotation
-                let r = self
-                    .iget(adjust_p)
-                    .get_child(adjust_direction.flip())
-                    .unwrap(); // child requiring rotation is the OPPOSITE of the one removed
+                let s = adjust_p.0; // parent of subtree requiring rotation
+                let r = self.iget(adjust_p.0).get_child(adjust_p.1.flip()).unwrap(); // child requiring rotation is the OPPOSITE of the one removed
 
                 if self.iget(r).balance == adjust_a.reverse() {
                     // page 454 case 1
-                    p = self.single_rotation(r, s, adjust_direction.flip());
+                    p = self.single_rotation(r, s, adjust_p.1.flip());
                     *self
-                        .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = Some(p);
+                        .iget_mut(next_adjust_p.0)
+                        .get_child_mut(next_adjust_p.1) = Some(p);
                     self.iget_mut(p).parent = next_adjust_p;
-                    self.iget_mut(p).direction = next_adjust_direction;
                     self.rerank(s);
                     self.rerank(r);
                     self.rerank(p);
                 } else if self.iget(r).balance == adjust_a {
                     // page 454 case 2
-                    p = self.double_rotation(r, s, adjust_direction.flip());
+                    p = self.double_rotation(r, s, adjust_p.1.flip());
                     *self
-                        .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = Some(p);
+                        .iget_mut(next_adjust_p.0)
+                        .get_child_mut(next_adjust_p.1) = Some(p);
                     self.iget_mut(p).parent = next_adjust_p;
-                    self.iget_mut(p).direction = next_adjust_direction;
                     self.rerank(s);
                     self.rerank(r);
                     self.rerank(p);
                 } else if self.iget(r).balance == Ordering::Equal {
                     // case 3: like case 1 except that beta has height h + 1 (same as gamma)
-                    p = self.single_rotation(r, s, adjust_direction.flip());
+                    p = self.single_rotation(r, s, adjust_p.1.flip());
                     *self
-                        .iget_mut(next_adjust_p)
-                        .get_child_mut(next_adjust_direction) = Some(p);
-                    self.iget_mut(adjust_p).balance = adjust_a.reverse();
+                        .iget_mut(next_adjust_p.0)
+                        .get_child_mut(next_adjust_p.1) = Some(p);
+                    self.iget_mut(adjust_p.0).balance = adjust_a.reverse();
                     self.iget_mut(p).balance = adjust_a;
                     self.iget_mut(p).parent = next_adjust_p;
-                    self.iget_mut(p).direction = next_adjust_direction;
                     self.rerank(s);
                     self.rerank(r);
                     self.rerank(p);
@@ -755,7 +734,6 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
                     panic!();
                 }
             }
-            adjust_direction = next_adjust_direction;
             adjust_p = next_adjust_p;
         }
         // Don't free any nodes while we have copies of the indexes, because
@@ -903,12 +881,10 @@ impl<ValueType: Hash + Eq + Clone> AssociativePositionalList<ValueType> {
                 // A10 finishing touch
                 if Some(s) == self.iget(t).get_child(Direction::Right) {
                     self.iget_mut(t).child[1] = p;
-                    self.iget_mut(p.unwrap()).parent = t;
-                    self.iget_mut(p.unwrap()).direction = Direction::Right;
+                    self.iget_mut(p.unwrap()).parent = (t, Direction::Right);
                 } else {
                     self.iget_mut(t).child[0] = p;
-                    self.iget_mut(p.unwrap()).parent = t;
-                    self.iget_mut(p.unwrap()).direction = Direction::Left;
+                    self.iget_mut(p.unwrap()).parent = (t, Direction::Left);
                 }
                 true
             }
@@ -958,8 +934,7 @@ impl<V: Debug> AssociativePositionalList<V> {
             return;
         }
         if let Some(ch) = self.head().get_child(Direction::Right) {
-            assert_eq!(self.iget(ch).parent, HEAD_INDEX);
-            assert_eq!(self.iget(ch).direction, Direction::Right);
+            assert_eq!(self.iget(ch).parent, (HEAD_INDEX, Direction::Right));
             let mut visited: HashMap<InternalIndex, bool> = HashMap::new();
             self.check_consistent_node(ch, &mut visited);
             assert_eq!(visited.len(), self.len());
@@ -982,8 +957,7 @@ impl<V: Debug> AssociativePositionalList<V> {
         for d in [Direction::Left, Direction::Right] {
             if let Some(child) = me.get_child(d) {
                 self.check_consistent_node(child, visited);
-                assert_eq!(self.iget(child).parent, node);
-                assert_eq!(self.iget(child).direction, d);
+                assert_eq!(self.iget(child).parent, (node, d));
             }
         }
         assert_eq!(
