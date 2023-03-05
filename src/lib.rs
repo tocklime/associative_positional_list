@@ -730,8 +730,7 @@ impl<ValueType: Hash + Eq> AssociativePositionalList<ValueType> {
                     self.rerank(p);
                     break; // balanced after single rotation
                 } else {
-                    // unexpected balance value
-                    panic!();
+                    panic!("unexpected balance value");
                 }
             }
             adjust_p = next_adjust_p;
