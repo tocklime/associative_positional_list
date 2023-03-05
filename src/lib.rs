@@ -434,34 +434,36 @@ where
 
     fn free_node(&mut self, remove_index: InternalIndex) {
         // Swap with the item at the end
-        let replacement: AVLNode<ValueType> = self.data.pop().unwrap();
+        self.data.swap_remove(remove_index);
         let replacement_index: InternalIndex = self.data.len();
-
         if remove_index >= replacement_index {
             // remove_index was at the end, so nothing more is needed - it's gone!
             return;
         }
+        //so, we've moved the item that was at `replacement_index` to `remove_index`. We'll
+        //need to patch up the links in parent and children to point to the new location.
 
-        // Change the index of "replacement" to be "remove_index" by making
-        // new child-parent links
-        if let Some(parent) = self.data.get_mut(replacement.parent) {
-            for c in &mut parent.child {
-                if *c == Some(replacement_index) {
-                    *c = Some(remove_index);
-                }
-            }
+        //first, grab the data we need (then drop the moved ref)
+        let moved = &self.data[remove_index];
+        let parent_of_moved = moved.parent;
+        let direction_of_moved = moved.direction;
+        let children = moved.child;
+
+        // Update the lookup table: update the index for this value
+        *self.lookup.get_mut(&moved.value).unwrap() = remove_index;
+
+        // fix the parent link.
+        // it's safe to unwrap here because we assume that parent-child links are correctly maintained in both directions
+        *self
+            .data
+            .get_mut(parent_of_moved)
+            .unwrap()
+            .get_child_mut(direction_of_moved) = Some(remove_index);
+
+        //fix all the child links
+        for c in children.iter().flatten() {
+            self.data.get_mut(*c).unwrap().parent = remove_index;
         }
-        for c in replacement.child.iter().flatten() {
-            if let Some(child) = self.data.get_mut(*c) {
-                child.parent = remove_index;
-            }
-        }
-
-        // Change the index for this value
-        self.lookup.insert(replacement.value.clone(), remove_index);
-
-        // replace the node itself
-        *self.data.get_mut(remove_index).unwrap() = replacement;
     }
 
     /// Insert `value` at `index`, causing the indexes of all items with index >= `index`
