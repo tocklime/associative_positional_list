@@ -416,20 +416,25 @@ impl<ValueType> AssociativePositionalList<ValueType> {
         //
         // direction = 0 is the same operation applied to a mirror image.
 
-        let p = r;
-        *self.iget_mut(s).get_child_mut(direction) = self.iget(r).get_child(direction.flip()); // beta subtree moved from r to s
-        *self.iget_mut(r).get_child_mut(direction.flip()) = Some(s); // node r becomes child of s
-        self.iget_mut(s).balance = Ordering::Equal;
-        self.iget_mut(r).balance = Ordering::Equal;
-        self.iget_mut(s).direction = direction.flip();
-        self.iget_mut(s).parent = r;
+        // beta subtree moved from r to s (and becomes the other side)
+        *self.data[s].get_child_mut(direction) = self.data[r].get_child(direction.flip());
 
-        if let Some(c) = self.iget(s).get_child(direction) {
-            self.iget_mut(c).parent = s;
-            self.iget_mut(c).direction = direction;
+        // node s becomes child of r
+        *self.data[r].get_child_mut(direction.flip()) = Some(s);
+        self.data[s].parent = r;
+        self.data[s].direction = direction.flip();
+
+        //both s and r should now be balanced.
+        self.data[s].balance = Ordering::Equal;
+        self.data[r].balance = Ordering::Equal;
+
+        if let Some(c) = self.data[s].get_child(direction) {
+            self.data[c].parent = s;
+            self.data[c].direction = direction;
         }
-        p
+        r
     }
+
     fn double_rotation(
         &mut self,
         r: InternalIndex,
@@ -449,42 +454,52 @@ impl<ValueType> AssociativePositionalList<ValueType> {
         //       /   \          ->
         //     beta  gamma      ->
         //
-        // direction = 0 is the same operation applied to a mirror image.
+        // direction = Left is the same operation applied to a mirror image.
 
         let a = match direction {
             Direction::Left => Ordering::Greater,
             Direction::Right => Ordering::Less,
         };
+        // p is child of r (node X in the book)
+        let p: InternalIndex = self.data[r].get_child(direction.flip()).unwrap();
 
-        let p: InternalIndex = self.iget(r).get_child(direction.flip()).unwrap(); // p is child of r (node X in the book)
-        *self.iget_mut(r).get_child_mut(direction.flip()) = self.iget(p).get_child(direction); // gamma subtree moved from p to r
-        *self.iget_mut(p).get_child_mut(direction) = Some(r); // r becomes child of p
-        *self.iget_mut(s).get_child_mut(direction) = self.iget(p).get_child(direction.flip()); // beta subtree moved from p to s
-        *self.iget_mut(p).get_child_mut(direction.flip()) = Some(s); // s becomes child of p
-        if self.iget(p).balance == a {
-            self.iget_mut(s).balance = a.reverse();
-            self.iget_mut(r).balance = Ordering::Equal;
-        } else if self.iget(p).balance == Ordering::Equal {
-            self.iget_mut(s).balance = Ordering::Equal;
-            self.iget_mut(r).balance = Ordering::Equal;
+        // gamma subtree moved from p to r
+        *self.data[r].get_child_mut(direction.flip()) = self.iget(p).get_child(direction);
+
+        // r becomes child of p
+        *self.data[p].get_child_mut(direction) = Some(r);
+
+        // beta subtree moved from p to s
+        *self.data[s].get_child_mut(direction) = self.iget(p).get_child(direction.flip());
+
+        // s becomes child of p
+        *self.data[p].get_child_mut(direction.flip()) = Some(s);
+
+        self.data[s].balance = if a == self.data[p].balance {
+            a.reverse()
         } else {
-            self.iget_mut(s).balance = Ordering::Equal;
-            self.iget_mut(r).balance = a;
-        }
-        self.iget_mut(p).balance = Ordering::Equal;
+            Ordering::Equal
+        };
+        self.data[r].balance = if a.reverse() == self.data[p].balance {
+            a
+        } else {
+            Ordering::Equal
+        };
 
-        self.iget_mut(s).parent = p;
-        self.iget_mut(s).direction = direction.flip();
+        self.data[p].balance = Ordering::Equal;
+
+        self.data[s].parent = p;
+        self.data[s].direction = direction.flip();
         if let Some(sc) = self.iget(s).get_child(direction) {
-            self.iget_mut(sc).parent = s;
-            self.iget_mut(sc).direction = direction;
+            self.data[sc].parent = s;
+            self.data[sc].direction = direction;
         }
 
-        self.iget_mut(r).parent = p;
-        self.iget_mut(r).direction = direction;
-        if let Some(rc) = self.iget(r).get_child(direction.flip()) {
-            self.iget_mut(rc).parent = r;
-            self.iget_mut(rc).direction = direction.flip();
+        self.data[r].parent = p;
+        self.data[r].direction = direction;
+        if let Some(rc) = self.data[r].get_child(direction.flip()) {
+            self.data[rc].parent = r;
+            self.data[rc].direction = direction.flip();
         }
         p
     }
@@ -923,7 +938,7 @@ impl<V: Debug> AssociativePositionalList<V> {
             .sum::<usize>()
             + 1
     }
-    fn calculate_balance(&self, node: InternalIndex) -> Ordering {
+    fn calculate_balance_at_node(&self, node: InternalIndex) -> Ordering {
         let n = self.iget(node);
         let [d1, d2] = [Direction::Left, Direction::Right].map(|d| {
             n.get_child(d)
@@ -980,7 +995,7 @@ impl<V: Debug> AssociativePositionalList<V> {
         );
         assert_eq!(
             me.balance,
-            self.calculate_balance(node),
+            self.calculate_balance_at_node(node),
             "Balance checking node with value {:?} in tree: {}",
             me.value,
             self.draw_tree()
