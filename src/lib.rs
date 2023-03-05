@@ -239,11 +239,8 @@ pub struct Iter<'a, ValueType: 'a> {
     parent: &'a AssociativePositionalList<ValueType>,
 }
 
-impl<'a, ValueType> Iterator for Iter<'a, ValueType>
-where
-    ValueType: Hash + Eq + Clone,
-{
-    type Item = ValueType;
+impl<'a, ValueType> Iterator for Iter<'a, ValueType> {
+    type Item = &'a ValueType;
 
     fn next(&mut self) -> Option<Self::Item> {
         // If the stack is empty, no more items
@@ -290,7 +287,7 @@ where
 
         // Return the value referenced at the top of the stack
         let n: &AVLNode<ValueType> = self.parent.iget(self.stack.last().unwrap().index);
-        Some(n.value.as_ref().unwrap().clone())
+        n.value.as_ref()
     }
 }
 
@@ -1048,7 +1045,7 @@ mod test {
         let mut t = AssociativePositionalList::<u16>::new();
         t.insert(0, 1);
         t.insert(1, 2);
-        let result: Vec<u16> = t.iter().collect();
+        let result: Vec<u16> = t.iter().copied().collect();
         assert_eq!(result, vec![1, 2]);
     }
 
@@ -1058,7 +1055,7 @@ mod test {
         t.insert(0, 1);
         t.insert(1, 2);
         t.remove(0);
-        let result: Vec<u16> = t.iter().collect();
+        let result: Vec<u16> = t.iter().copied().collect();
         assert_eq!(result, vec![2]);
     }
 
@@ -1067,7 +1064,7 @@ mod test {
         let vec = vec![0, 1, 2];
         let mut t = AssociativePositionalList::new();
         for a in vec.iter().rev() {
-            t.insert(0, a);
+            t.insert(0, *a);
             t.check_consistent();
         }
         let back_to_vec: Vec<u8> = t.iter().copied().collect();
@@ -1078,7 +1075,7 @@ mod test {
         let vec = vec![0, 1, 2, 3, 4, 5];
         let mut t = AssociativePositionalList::new();
         for (ix, a) in vec.iter().enumerate() {
-            t.insert(ix, a);
+            t.insert(ix, *a);
             t.check_consistent();
         }
         let back_to_vec: Vec<u8> = t.iter().copied().collect();
@@ -1092,7 +1089,7 @@ mod test {
             let vec : Vec<u8> = (0..size).collect();
             let mut t = AssociativePositionalList::new();
             for (ix, a) in vec.iter().enumerate() {
-                t.insert(ix, a);
+                t.insert(ix, *a);
             }
             let back_to_vec : Vec<u8> = t.iter().copied().collect();
             assert_eq!(back_to_vec, vec);
@@ -1102,7 +1099,7 @@ mod test {
             let vec : Vec<u8> = (0..size).collect();
             let mut t = AssociativePositionalList::new();
             for a in vec.iter().rev() {
-                t.insert(0, a);
+                t.insert(0, *a);
             }
             let back_to_vec : Vec<u8> = t.iter().copied().collect();
             assert_eq!(back_to_vec, vec);
@@ -1120,7 +1117,7 @@ mod test {
 
         fn check_all(test_me: &TestAssociativePositionalList, ref_list: &Vec<TestValueType>) {
             test_me.check_consistent();
-            let as_vec: Vec<TestValueType> = test_me.iter().collect();
+            let as_vec: Vec<TestValueType> = test_me.iter().copied().collect();
             assert_eq!(&as_vec, ref_list);
         }
 
@@ -1238,7 +1235,7 @@ mod test {
             let mut another: TestAssociativePositionalList = AssociativePositionalList::new();
             assert!(test_me != another);
             for (i, x) in test_me.iter().enumerate() {
-                another.insert(i, x);
+                another.insert(i, *x);
             }
             assert!(test_me == another); // the other list has the same values
             let v = another[1];
